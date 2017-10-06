@@ -17,10 +17,10 @@ import scala.concurrent.duration._
 class RuleBenchmark {
 
 
-
   val step_1_rules = List(
     step1.Engine.countryRule("FR"), step1.Engine.deviceRule("Mobile")
   )
+
   @Benchmark
   def benchmark_step1_predicate(): Unit = {
     val ad = Ad("FR", "Mobile")
@@ -29,10 +29,10 @@ class RuleBenchmark {
   }
 
 
-
   val step_2_rules = List(
     step2.Engine.countryRule("FR"), step2.Engine.deviceRule("Mobile")
   )
+
   @Benchmark
   def benchmark_step2_predicate(): Unit = {
     val ad = Ad("FR", "Mobile")
@@ -41,14 +41,38 @@ class RuleBenchmark {
   }
 
 
-
   val step_3_rules = List(
     step3.Engine.countryRule("FR"), step3.Engine.deviceRule("Mobile")
   )
+
   @Benchmark
   def benchmark_step3_futures(): Unit = {
     val ad = Ad("FR", "Mobile")
 
     Await.result(step3.Engine.canBroadcast(step_3_rules)(global)(ad), atMost = 1.minute)
+  }
+
+  val step_4_sync_rules = List(
+    step4.Engine.deviceRule("Mobile"),
+    step4.Engine.deviceRule("Mobile")
+  )
+
+  @Benchmark
+  def benchmark_step4_sync_rules(): Unit = {
+    val ad = Ad("FR", "Mobile")
+
+    Await.result(step4.Engine.combineAll(step_4_sync_rules)(ad)(global), atMost = 1.minute)
+  }
+
+  val step_4_async_rules = List(
+    step4.Engine.countryRule("FR"),
+    step4.Engine.deviceRule("Mobile")
+  )
+
+  @Benchmark
+  def benchmark_step4_async_rules(): Unit = {
+    val ad = Ad("FR", "Mobile")
+
+    Await.result(step4.Engine.combineAll(step_4_async_rules)(ad)(global), atMost = 1.minute)
   }
 }
