@@ -1,87 +1,101 @@
-import scala.concurrent.{Await, ExecutionContext, Future}
+import cats.arrow.FunctionK
+import cats.data.Kleisli
+import cats.{Foldable, Id, Monad, Monoid, MonoidK, Semigroup, SemigroupK}
+
+import scala.concurrent.{Await, Future}
 import scala.concurrent.duration._
+import scala.language.reflectiveCalls
 
 type ExecutionResult[T] = Either[String, T]
 
-sealed trait Rule[T]
+//TODO 1
+type Rule[Effect[_], T] = Kleisli[Effect, T, ExecutionResult[T]]
+type SyncRule[T] = Rule[Id, T]
+type AsyncRule[T] = Rule[Future, T]
 
-trait SyncRule[T] extends Rule[T] {
-  def apply(t: T): ExecutionResult[T]
-}
+object Rule {
 
-object SyncRule {
-  def apply[T](rule: T => ExecutionResult[T]): SyncRule[T] = (t: T) => rule(t)
+  def apply[Effect[_], T](rule: T ⇒ Effect[ExecutionResult[T]]): Rule[Effect, T] =
+    Kleisli[Effect, T, ExecutionResult[T]](rule)
 
-  def compose[T](left: SyncRule[T], right: SyncRule[T]): SyncRule[T] = (t: T) => {
-    left(t).fold(error => Left(error), value => right(value))
-  }
-}
+  def sync[T](rule: T => ExecutionResult[T]): SyncRule[T] =
+    Rule[Id, T](rule)
 
-trait AsyncRule[T] extends Rule[T] {
-  def apply(t: T)(implicit ec: ExecutionContext): Future[ExecutionResult[T]]
-}
+  def async[T](rule: T => Future[ExecutionResult[T]]): AsyncRule[T] =
+    Rule[Future, T](rule)
 
-object AsyncRule {
-  def apply[T](rule: T => Future[ExecutionResult[T]]): AsyncRule[T] = new AsyncRule[T] {
-    override def apply(t: T)(implicit ec: ExecutionContext): Future[ExecutionResult[T]] = rule(t)
-  }
+  // TODO 4
+  // TODO 6 SEMIGROUP
+  // TODO 7 SEMIGROUPK
 
-  def compose[T](left: AsyncRule[T], right: AsyncRule[T]): AsyncRule[T] = new AsyncRule[T] {
-    override def apply(t: T)(implicit ec: ExecutionContext): Future[ExecutionResult[T]] = left(t).flatMap {
-      case Right(value) => right(value)
-      case Left(error) => Future.successful(Left(error))
+  def semigroupK[Effect[_] : Monad]: SemigroupK[({type L[A] = Rule[Effect, A]})#L] =
+    new SemigroupK[({type L[A] = Rule[Effect, A]})#L] {
+      val effectMonad = Monad[Effect]
+
+      override def combineK[T](left: Rule[Effect, T], right: Rule[Effect, T]): Rule[Effect, T] = {
+        Rule[Effect, T] { (t: T) =>
+          effectMonad.flatMap(left(t)) {
+            case Right(value) => right(value)
+            case error@Left(reason) => effectMonad.pure(error)
+          }
+        }
+      }
+    }
+
+  implicit def monoidK[Effect[_] : Monad]: MonoidK[({type L[A] = Rule[Effect, A]})#L] = new MonoidK[({type L[A] = Rule[Effect, A]})#L] {
+    val effectMonad = Monad[Effect]
+
+    override def combineK[T](left: Rule[Effect, T], right: Rule[Effect, T]): Rule[Effect, T] = {
+      Rule[Effect, T] { (t: T) =>
+        effectMonad.flatMap(left(t)) {
+          case Right(value) => right(value)
+          case error@Left(reason) => effectMonad.pure(error)
+        }
+      }
+    }
+
+    override def empty[T]: Rule[Effect, T] = {
+      Rule[Effect, T]((t: T) => effectMonad.pure(Right(t)))
     }
   }
 
-  def compose[T](left: SyncRule[T], right: AsyncRule[T]): AsyncRule[T] = new AsyncRule[T] {
-    override def apply(t: T)(implicit ec: ExecutionContext): Future[ExecutionResult[T]] = left(t).fold(
-      error => Future.successful(Left(error)),
-      value => right(value)
-    )
+  def combine[Effect[_] : Monad, T](left: Rule[Effect, T], right: Rule[Effect, T]): Rule[Effect, T] = {
+    val combiner: Semigroup[Rule[Effect, T]] = semigroupK[Effect].algebra[T]
+
+    combiner.combine(left, right)
   }
+
+  //TODO 5: coincé, passage à Kleisli
+  // TODO 8 FUNCTION K + KLEISLI TRANSFORM
+  def combineF[Effect1[_], Effect2[_] : Monad, T](left: Rule[Effect1, T], right: Rule[Effect2, T])(implicit effectTransformer: FunctionK[Effect1, Effect2]): Rule[Effect2, T] = {
+    combine(left.transform(effectTransformer), right)
+  }
+
+}
+
+implicit val idToFuture: FunctionK[Id, Future] = new FunctionK[Id, Future] {
+  override def apply[A](fa: Id[A]): Future[A] = Future.successful(fa)
 }
 
 type Device = String
 
 type Country = String
 
-def deviceRule(device: Device): Rule[Ad] = {
-  SyncRule(ad => Either.cond(ad.device == device, ad, "Device does not match"))
+def deviceRule(device: Device): Rule[Id, Ad] = {
+  Rule.sync(ad => Either.cond(ad.device == device, ad, "Device does not match"))
 }
-def countryRule(country: Country): Rule[Ad] = {
-  AsyncRule(ad => Future.successful(Either.cond(ad.country == country, ad, "Country does not match")))
+def countryRule(country: Country): Rule[Future, Ad] = {
+  Rule.async(ad => Future.successful(Either.cond(ad.country == country, ad, "Country does not match")))
 }
 
 case class Ad(country: Country, device: Device)
 
-val rules: List[Rule[Ad]] = List(
-  countryRule("FR"),
-  deviceRule("Mobile")
-)
+import scala.concurrent.ExecutionContext.Implicits.global
+import cats.instances.future._
 
-def combine[T](left: Rule[T], right: Rule[T]): Rule[T] = {
-  (left, right) match {
-    case (leftRule: SyncRule[T], rightRule: SyncRule[T]) => SyncRule.compose(leftRule, rightRule)
-    case (leftRule: SyncRule[T], rightRule: AsyncRule[T]) => AsyncRule.compose(leftRule, rightRule)
-    case (leftRule: AsyncRule[T], rightRule: SyncRule[T]) => AsyncRule.compose(rightRule, leftRule)
-    case (leftRule: AsyncRule[T], rightRule: AsyncRule[T]) => AsyncRule.compose(leftRule, rightRule)
-  }
-}
+val superRule = Rule.combine[Id, Ad](deviceRule("Mobile"), deviceRule("Desktop"))
+val complexRule = Rule.combineF[Id, Future, Ad](deviceRule("Mobile"), countryRule("FR"))
 
-def fold[T](rules: List[Rule[T]]): Rule[T] = {
-  val firstRule: Rule[T] = SyncRule[T](t => Right(t))
-  rules.foldLeft(firstRule) {
-    case (acc, rule) => combine(acc, rule)
-  }
-}
-
-def combineAll(rules: List[Rule[Ad]]): AsyncRule[Ad] = {
-  fold[Ad](rules) match {
-    case syncRule: SyncRule[Ad] => AsyncRule(ad => Future.successful(syncRule(ad)))
-    case asyncRule: AsyncRule[Ad] => asyncRule
-  }
-}
-
-import scala.concurrent.ExecutionContext.global
-
-Await.result(combineAll(rules)(Ad("FR", "Mobile"))(global), atMost = 10.seconds)
+deviceRule("Mobile")(Ad("FR", "Mobile"))
+superRule(Ad("FR", "Mobile"))
+Await.result(complexRule(Ad("FR", "Mobile")), atMost = 10.seconds)

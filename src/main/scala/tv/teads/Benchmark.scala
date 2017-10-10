@@ -75,4 +75,28 @@ class RuleBenchmark {
 
     Await.result(step4.Engine.combineAll(step_4_async_rules)(ad)(global), atMost = 1.minute)
   }
+
+  val step_5_sync_rules = List(
+    step5.Engine.deviceRule("Mobile"),
+    step5.Engine.deviceRule("Mobile")
+  )
+
+  @Benchmark
+  def benchmark_step5_sync_rules(): Unit = {
+    val ad = Ad("FR", "Mobile")
+
+//    Await.result(step5.Engine.combineAll(step_5_sync_rules)(ad)(global), atMost = 1.minute)
+  }
+
+//  val step_5_async_rules = List(
+//    step5.Engine.countryRule("FR"),
+//    step5.Engine.deviceRule("Mobile")
+//  )
+
+  @Benchmark
+  def benchmark_step5_async_rules(): Unit = {
+    val ad = Ad("FR", "Mobile")
+
+//    Await.result(step5.Engine.combineAll(step_5_async_rules)(ad)(global), atMost = 1.minute)
+  }
 }

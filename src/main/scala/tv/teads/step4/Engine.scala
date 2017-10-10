@@ -39,7 +39,7 @@ object Engine {
       }
     }
 
-    def compose[T](left: SyncRule[T], right: AsyncRule[T]): AsyncRule[T] = new AsyncRule[T] {
+    def merge[T](left: SyncRule[T], right: AsyncRule[T]): AsyncRule[T] = new AsyncRule[T] {
       override def apply(t: T)(implicit ec: ExecutionContext): Future[ExecutionResult[T]] = left(t).fold(
         error => Future.successful(Left(error)),
         value => right(value)
@@ -50,8 +50,8 @@ object Engine {
   def combine[T](left: Rule[T], right: Rule[T]): Rule[T] = {
     (left, right) match {
       case (leftRule: SyncRule[T], rightRule: SyncRule[T]) => SyncRule.compose(leftRule, rightRule)
-      case (syncRule: SyncRule[T], asyncRule: AsyncRule[T]) => AsyncRule.compose(syncRule, asyncRule)
-      case (asyncRule: AsyncRule[T], syncRule: SyncRule[T]) => AsyncRule.compose(syncRule, asyncRule)
+      case (syncRule: SyncRule[T], asyncRule: AsyncRule[T]) => AsyncRule.merge(syncRule, asyncRule)
+      case (asyncRule: AsyncRule[T], syncRule: SyncRule[T]) => AsyncRule.merge(syncRule, asyncRule)
       case (leftRule: AsyncRule[T], rightRule: AsyncRule[T]) => AsyncRule.compose(leftRule, rightRule)
     }
   }
