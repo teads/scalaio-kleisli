@@ -1,6 +1,6 @@
 package tv.teads.step5
 
-import cats.{Foldable, Monad, Monoid, MonoidK, Id}
+import cats.{Foldable, Id, Monad, Monoid, MonoidK, Traverse}
 import cats.instances.list._
 import cats.arrow.FunctionK
 import cats.data.Kleisli
@@ -56,7 +56,9 @@ object Engine {
     }
 
     def fold[Effect[_] : Monad, T](rules: List[Rule[Effect, T]]): Rule[Effect, T] = {
-      ???
+      import cats.instances.list._
+
+      Traverse[List].fold(rules)(monoidK[Effect].algebra[T])
     }
 
     def transform[Effect1[_], Effect2[_] : Monad, T](left: Rule[Effect1, T], right: Rule[Effect2, T])(implicit effectTransformer: FunctionK[Effect1, Effect2]): Rule[Effect2, T] = {

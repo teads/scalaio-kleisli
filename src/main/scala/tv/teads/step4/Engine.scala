@@ -18,7 +18,7 @@ object Engine {
   object SyncRule {
     def apply[T](rule: T => ExecutionResult[T]): SyncRule[T] = (t: T) => rule(t)
 
-    def compose[T](left: SyncRule[T], right: SyncRule[T]): SyncRule[T] = (t: T) => {
+    def combine[T](left: SyncRule[T], right: SyncRule[T]): SyncRule[T] = (t: T) => {
       left(t).fold(error => Left(error), value => right(value))
     }
   }
@@ -32,7 +32,7 @@ object Engine {
       override def apply(t: T)(implicit ec: ExecutionContext): Future[ExecutionResult[T]] = rule(t)
     }
 
-    def compose[T](left: AsyncRule[T], right: AsyncRule[T]): AsyncRule[T] = new AsyncRule[T] {
+    def combine[T](left: AsyncRule[T], right: AsyncRule[T]): AsyncRule[T] = new AsyncRule[T] {
       override def apply(t: T)(implicit ec: ExecutionContext): Future[ExecutionResult[T]] = left(t).flatMap {
         case Right(value) => right(value)
         case Left(error) => Future.successful(Left(error))
@@ -49,10 +49,10 @@ object Engine {
 
   def combine[T](left: Rule[T], right: Rule[T]): Rule[T] = {
     (left, right) match {
-      case (leftRule: SyncRule[T], rightRule: SyncRule[T]) => SyncRule.compose(leftRule, rightRule)
+      case (leftRule: SyncRule[T], rightRule: SyncRule[T]) => SyncRule.combine(leftRule, rightRule)
       case (syncRule: SyncRule[T], asyncRule: AsyncRule[T]) => AsyncRule.merge(syncRule, asyncRule)
       case (asyncRule: AsyncRule[T], syncRule: SyncRule[T]) => AsyncRule.merge(syncRule, asyncRule)
-      case (leftRule: AsyncRule[T], rightRule: AsyncRule[T]) => AsyncRule.compose(leftRule, rightRule)
+      case (leftRule: AsyncRule[T], rightRule: AsyncRule[T]) => AsyncRule.combine(leftRule, rightRule)
     }
   }
 
