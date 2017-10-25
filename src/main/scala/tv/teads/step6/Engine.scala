@@ -1,7 +1,7 @@
 package tv.teads.step6
 
 import cats.arrow.FunctionK
-import cats.data.{Kleisli, Validated}
+import cats.data._
 import cats.kernel.Monoid
 import cats.{Applicative, Apply, Id, Monad, Semigroup, SemigroupK, Traverse}
 import tv.teads.{Ad, Country, Device}
@@ -11,7 +11,7 @@ import scala.language.reflectiveCalls
 
 object Engine {
 
-  type ExecutionResult[T] = Validated[List[String], T]
+  type ExecutionResult[T] = ValidatedNel[String, T]
 
   type Rule[Effect[_], T] = Kleisli[Effect, T, ExecutionResult[T]]
   type SyncRule[T] = Rule[Id, T]
@@ -29,15 +29,10 @@ object Engine {
 
   object ExecutionResult {
 
-    import cats.instances.list.catsStdInstancesForList
+    implicit val semigroupK: SemigroupK[({type L[A] = ValidatedNel[String, A]})#L] =
+      Validated.catsDataSemigroupKForValidated(NonEmptyList.catsDataSemigroupForNonEmptyList)
 
-    private val resultErrorSemigroup: Semigroup[List[String]] =
-      SemigroupK[List].algebra[String]
-
-    implicit val semigroupK: SemigroupK[({type L[A] = Validated[List[String], A]})#L] =
-      Validated.catsDataSemigroupKForValidated(resultErrorSemigroup)
-
-    implicit def semigroup[T]: Semigroup[Validated[List[String], T]] =
+    implicit def semigroup[T]: Semigroup[ValidatedNel[String, T]] =
       semigroupK.algebra[T]
 
   }
@@ -59,7 +54,7 @@ object Engine {
 
       new Monoid[Rule[Effect, T]] {
         override def empty: Rule[Effect, T] = {
-          Kleisli(t => Applicative[Effect].pure(Validated.valid[List[String], T](t)))
+          Kleisli(t => Applicative[Effect].pure(Validated.validNel[String, T](t)))
         }
 
         override def combine(x: Rule[Effect, T], y: Rule[Effect, T]): Rule[Effect, T] = {
@@ -96,9 +91,9 @@ object Engine {
   def deviceRule(device: Device): SyncRule[Ad] = {
     SyncRule { ad =>
       if (ad.device == device)
-        Validated.valid(ad)
+        Validated.validNel(ad)
       else
-        Validated.invalid(List("Device does not match"))
+        Validated.invalidNel("Device does not match")
     }
   }
 
@@ -106,9 +101,9 @@ object Engine {
     AsyncRule { ad =>
       Future {
         if (ad.country == country)
-          Validated.valid(ad)
+          Validated.validNel(ad)
         else
-          Validated.invalid(List("Country does not match"))
+          Validated.invalidNel("Country does not match")
       }
     }
   }
