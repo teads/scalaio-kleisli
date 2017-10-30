@@ -1,17 +1,30 @@
 package tv.teads.step3
 
 import tv.teads.{Ad, Device, Country}
+import scala.concurrent.Future
 
 import scala.concurrent.ExecutionContext
 
 object Engine {
 
-  import scala.concurrent.Future
+  type ExecutionResult[T] = Either[String, T]
+  type Rule[T] = T => Future[ExecutionResult[T]]
 
-  type ExecutionResult = Either[String, Ad]
-  type Rule[T] = T => Future[ExecutionResult]
+  object Rule{
 
-  def deviceRule(device: Device)(implicit ec: ExecutionContext): Rule[Ad] = {
+    def run[T](rules: List[Rule[T]], t: T)(implicit ec: ExecutionContext): Future[ExecutionResult[T]] = {
+      val checkingRules = Future.sequence(rules.map(rule => rule(t)))
+      checkingRules.map { results =>
+        results.foldLeft(Right(t): ExecutionResult[T]) {
+          case (Right(a), result) => result
+          case (left, _) => left
+        }
+      }
+    }
+
+  }
+
+  def deviceRule(device: Device): Rule[Ad] = {
     ad => Future.successful(Either.cond(ad.device == device, ad, "Device does not match"))
   }
 
@@ -19,14 +32,4 @@ object Engine {
     ad => Future(Either.cond(ad.country == country, ad, "Country does not match"))
   }
 
-
-  def canBroadcast(rules: List[Rule[Ad]])(implicit ec: ExecutionContext): Rule[Ad] = (ad) => {
-    val checkingRules = Future.sequence(rules.map(rule => rule(ad)))
-    checkingRules.map { results =>
-      results.foldLeft(Right(ad): ExecutionResult) {
-        case (Right(a), result) => result
-        case (left, _) => left
-      }
-    }
-  }
 }

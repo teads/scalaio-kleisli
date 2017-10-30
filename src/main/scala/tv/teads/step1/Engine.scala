@@ -7,6 +7,14 @@ object Engine {
   type ExecutionResult = Boolean
   type Rule[T] = T => ExecutionResult
 
+  object Rule {
+
+    def run[T](rules: List[Rule[T]], t: T): ExecutionResult = {
+      rules.forall(rule => rule(t))
+    }
+
+  }
+
   def deviceRule(device: Device): Rule[Ad] = {
     ad => ad.device == device
   }
@@ -15,11 +23,4 @@ object Engine {
     ad => ad.country == country
   }
 
-
-  def canBroadcast(rules: List[Rule[Ad]]): Rule[Ad] = (ad) => {
-    rules.foldLeft(true) {
-      case (true, rule) => rule(ad)
-      case _ => false
-    }
-  }
 }

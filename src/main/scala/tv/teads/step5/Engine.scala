@@ -1,9 +1,8 @@
 package tv.teads.step5
 
-import cats.{Foldable, Id, Monad, Monoid, MonoidK, Traverse}
-import cats.instances.list._
 import cats.arrow.FunctionK
 import cats.data.Kleisli
+import cats.{Id, Monad, Monoid, MonoidK, Semigroup, SemigroupK, Traverse}
 import tv.teads.{Ad, Country, Device}
 
 import scala.concurrent.{ExecutionContext, Future}
@@ -32,7 +31,7 @@ object Engine {
     def apply[Effect[_], T](rule: T ⇒ Effect[ExecutionResult[T]]): Rule[Effect, T] =
       Kleisli[Effect, T, ExecutionResult[T]](rule)
 
-    def monoidK[Effect[_] : Monad]: MonoidK[({type L[A] = Rule[Effect, A]})#L] = new MonoidK[({type L[A] = Rule[Effect, A]})#L] {
+    implicit def monoidK[Effect[_] : Monad]: MonoidK[({type L[A] = Rule[Effect, A]})#L] = new MonoidK[({type L[A] = Rule[Effect, A]})#L] {
       val effectMonad = Monad[Effect]
 
       override def combineK[T](left: Rule[Effect, T], right: Rule[Effect, T]): Rule[Effect, T] = {
@@ -49,8 +48,12 @@ object Engine {
       }
     }
 
+    implicit def monoid[Effect[_] : Monad, T]: Monoid[Rule[Effect, T]] = {
+      monoidK.algebra[T]
+    }
+
     def combine[Effect[_] : Monad, T](left: Rule[Effect, T], right: Rule[Effect, T]): Rule[Effect, T] = {
-      val combiner: Monoid[Rule[Effect, T]] = monoidK[Effect].algebra[T]
+      val combiner: Monoid[Rule[Effect, T]] = monoid[Effect, T]
 
       combiner.combine(left, right)
     }
@@ -58,15 +61,20 @@ object Engine {
     def fold[Effect[_] : Monad, T](rules: List[Rule[Effect, T]]): Rule[Effect, T] = {
       import cats.instances.list._
 
-      Traverse[List].fold(rules)(monoidK[Effect].algebra[T])
+      Traverse[List].fold(rules)(monoid[Effect, T])
     }
 
     def transform[Effect1[_], Effect2[_] : Monad, T](left: Rule[Effect1, T], right: Rule[Effect2, T])(implicit effectTransformer: FunctionK[Effect1, Effect2]): Rule[Effect2, T] = {
       combine(left.transform(effectTransformer), right)
     }
 
-    implicit val idToFuture: FunctionK[Id, Future] = new FunctionK[Id, Future] {
-      override def apply[A](fa: Id[A]): Future[A] = Future.successful(fa)
+    def run[Effect[_], T](rule: Rule[Effect, T], t: T): Effect[ExecutionResult[T]] =
+      rule.run(t)
+
+    object Transformer {
+      implicit val idToFuture: FunctionK[Id, Future] = new FunctionK[Id, Future] {
+        override def apply[A](fa: Id[A]): Future[A] = Future.successful(fa)
+      }
     }
 
   }

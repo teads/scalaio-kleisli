@@ -19,7 +19,7 @@ object Engine {
     def apply[T](rule: T => ExecutionResult[T]): SyncRule[T] = (t: T) => rule(t)
 
     def combine[T](left: SyncRule[T], right: SyncRule[T]): SyncRule[T] = (t: T) => {
-      left(t).fold(error => Left(error), value => right(value))
+      left(t).flatMap(value => right(value))
     }
   }
 
@@ -39,34 +39,52 @@ object Engine {
       }
     }
 
-    def merge[T](left: SyncRule[T], right: AsyncRule[T]): AsyncRule[T] = new AsyncRule[T] {
+  }
+
+  object Rule{
+    def transform[T](left: SyncRule[T], right: AsyncRule[T]): AsyncRule[T] = new AsyncRule[T] {
       override def apply(t: T)(implicit ec: ExecutionContext): Future[ExecutionResult[T]] = left(t).fold(
         error => Future.successful(Left(error)),
         value => right(value)
       )
     }
-  }
 
-  def combine[T](left: Rule[T], right: Rule[T]): Rule[T] = {
-    (left, right) match {
-      case (leftRule: SyncRule[T], rightRule: SyncRule[T]) => SyncRule.combine(leftRule, rightRule)
-      case (syncRule: SyncRule[T], asyncRule: AsyncRule[T]) => AsyncRule.merge(syncRule, asyncRule)
-      case (asyncRule: AsyncRule[T], syncRule: SyncRule[T]) => AsyncRule.merge(syncRule, asyncRule)
-      case (leftRule: AsyncRule[T], rightRule: AsyncRule[T]) => AsyncRule.combine(leftRule, rightRule)
+    def combine[T](left: Rule[T], right: Rule[T]): Rule[T] = {
+      (left, right) match {
+        case (leftRule: SyncRule[T], rightRule: SyncRule[T]) => SyncRule.combine(leftRule, rightRule)
+        case (syncRule: SyncRule[T], asyncRule: AsyncRule[T]) => Rule.transform(syncRule, asyncRule)
+        case (asyncRule: AsyncRule[T], syncRule: SyncRule[T]) => Rule.transform(syncRule, asyncRule)
+        case (leftRule: AsyncRule[T], rightRule: AsyncRule[T]) => AsyncRule.combine(leftRule, rightRule)
+      }
     }
-  }
 
-  def fold[T](rules: List[Rule[T]]): Rule[T] = {
-    val firstRule: Rule[T] = SyncRule[T](t => Right(t))
-    rules.foldLeft(firstRule) {
-      case (acc, rule) => combine(acc, rule)
+    def fold[T](rules: List[Rule[T]]): Rule[T] = {
+      val firstRule: Rule[T] = SyncRule[T](t => Right(t))
+      rules.foldLeft(firstRule) {
+        case (acc, rule) => combine(acc, rule)
+      }
     }
-  }
 
-  def combineAll(rules: List[Rule[Ad]]): AsyncRule[Ad] = {
-    fold[Ad](rules) match {
-      case syncRule: SyncRule[Ad] => AsyncRule(ad => Future.successful(syncRule(ad)))
-      case asyncRule: AsyncRule[Ad] => asyncRule
+    def transformAll[T](rules: List[Rule[T]]): AsyncRule[T] = {
+      fold[T](rules) match {
+        case syncRule: SyncRule[T] => AsyncRule(ad => Future.successful(syncRule(ad)))
+        case asyncRule: AsyncRule[T] => asyncRule
+      }
+    }
+
+    def run[T](rules: List[Rule[T]], t: T)(implicit executionContext: ExecutionContext): Future[ExecutionResult[T]] = {
+      transformAll(rules)(t)
+    }
+
+    def foldSync[T](rules: List[SyncRule[T]]): SyncRule[T] = {
+      val firstRule: SyncRule[T] = SyncRule[T](t => Right(t))
+      rules.foldLeft(firstRule) {
+        case (acc, rule) => SyncRule.combine(acc, rule)
+      }
+    }
+
+    def runSync[T](rules: List[SyncRule[T]], t: T): ExecutionResult[T] = {
+      foldSync(rules)(t)
     }
   }
 

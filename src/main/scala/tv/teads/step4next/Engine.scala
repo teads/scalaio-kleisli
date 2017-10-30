@@ -1,6 +1,6 @@
 package tv.teads.step4next
 
-import cats.{Foldable, Monoid, MonoidK, Semigroup}
+import cats.{Foldable, MonoidK, Semigroup}
 import cats.instances.list._
 import tv.teads.{Ad, Country, Device}
 
@@ -63,17 +63,6 @@ object Engine {
 
   object Rule {
 
-    implicit def monoid[T]: Monoid[Rule[T]] = new Monoid[Rule[T]] {
-      override def empty: Rule[T] = SyncRule[T](t => Right(t))
-
-      override def combine(x: Rule[T], y: Rule[T]): Rule[T] = (x, y) match {
-        case (leftRule: SyncRule[T], rightRule: SyncRule[T]) => SyncRule.combine(leftRule, rightRule)
-        case (syncRule: SyncRule[T], asyncRule: AsyncRule[T]) => AsyncRule.transform(syncRule, asyncRule)
-        case (asyncRule: AsyncRule[T], syncRule: SyncRule[T]) => AsyncRule.transform(syncRule, asyncRule)
-        case (leftRule: AsyncRule[T], rightRule: AsyncRule[T]) => AsyncRule.combine(leftRule, rightRule)
-      }
-    }
-
     implicit val monoidK: MonoidK[Rule] = new MonoidK[Rule] {
       override def empty[T]: Rule[T] = SyncRule[T](t => Right(t))
 
@@ -85,21 +74,36 @@ object Engine {
       }
     }
 
-    def combine[T](left: Rule[T], right: Rule[T]): Rule[T] = monoidK.algebra[T].combine(left, right)
+    def combine[T](left: Rule[T], right: Rule[T]): Rule[T] = {
+      monoidK.algebra[T].combine(left, right)
+    }
 
     def fold[T](rules: List[Rule[T]]): Rule[T] = {
       Foldable[List].foldK(rules)
     }
 
-    def transformAll(rules: List[Rule[Ad]]): AsyncRule[Ad] = {
-      fold[Ad](rules) match {
-        case syncRule: SyncRule[Ad] => AsyncRule(ad => Future.successful(syncRule(ad)))
-        case asyncRule: AsyncRule[Ad] => asyncRule
+    def transformAll[T](rules: List[Rule[T]]): AsyncRule[T] = {
+      fold[T](rules) match {
+        case syncRule: SyncRule[T] => AsyncRule(t => Future.successful(syncRule(t)))
+        case asyncRule: AsyncRule[T] => asyncRule
       }
     }
 
-  }
+    def run[T](rules: List[Rule[T]], t: T)(implicit executionContext: ExecutionContext): Future[ExecutionResult[T]] = {
+      transformAll(rules)(t)
+    }
 
+    def foldSync[T](rules: List[SyncRule[T]]): SyncRule[T] = {
+      val firstRule: SyncRule[T] = SyncRule[T](t => Right(t))
+      rules.foldLeft(firstRule) {
+        case (acc, rule) => SyncRule.combine(acc, rule)
+      }
+    }
+
+    def runSync[T](rules: List[SyncRule[T]], t: T): ExecutionResult[T] = {
+      foldSync(rules)(t)
+    }
+  }
 
   def deviceRule(device: Device): SyncRule[Ad] = {
     SyncRule(ad => Either.cond(ad.device == device, ad, "Device does not match"))
