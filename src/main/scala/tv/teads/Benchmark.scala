@@ -49,9 +49,11 @@ class RuleBenchmark {
     step3.Engine.countryRule("FR"), step3.Engine.deviceRule("Mobile")
   )
 
+  private val _1_SECOND = 1.second
+
   @Benchmark
   def benchmark_step3_futures(): Unit = {
-    Await.result(step3.Engine.Rule.run(step_3_rules, ad), atMost = 1.second)
+    Await.result(step3.Engine.Rule.run(step_3_rules, ad), atMost = _1_SECOND)
   }
 
   /** ******
@@ -74,30 +76,31 @@ class RuleBenchmark {
 
   @Benchmark
   def benchmark_step4_async_rules(): Unit = {
-    Await.result(step4.Engine.Rule.run(step_4_async_rules, ad), atMost = 1.second)
+    Await.result(step4.Engine.Rule.run(step_4_async_rules, ad), atMost = _1_SECOND)
   }
 
   /** ******
     * STEP 5
     * ***** */
-  val step_5_sync_rules = List(
+  val step_5_sync_rules = step5.Engine.Rule.fold(List(
     step5.Engine.deviceRule("Mobile"),
     step5.Engine.deviceRule("Mobile")
-  )
+  ))
 
   @Benchmark
   def benchmark_step5_sync_rules(): Unit = {
-    step5.Engine.Rule.fold(step_5_sync_rules).run(ad)
+    step_5_sync_rules.run(ad)
   }
 
   val step5CountryRule = step5.Engine.countryRule("FR")
   val step5DeviceRule = step5.Engine.deviceRule("Mobile")
 
   import cats.instances.future._
-  import step5.Engine.Rule.Transformer.idToFuture
+  import step5.Engine.Transformer.idToFuture
+  val step5_async_rules = step5.Engine.Rule.transform(step5DeviceRule, step5CountryRule)
 
   @Benchmark
   def benchmark_step5_async_rules(): Unit = {
-    Await.result(step5.Engine.Rule.transform(step5DeviceRule, step5CountryRule).run(ad), atMost = 1.second)
+    Await.result(step5_async_rules.run(ad), atMost = _1_SECOND)
   }
 }

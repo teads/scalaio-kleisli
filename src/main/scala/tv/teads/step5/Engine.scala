@@ -35,16 +35,14 @@ object Engine {
       val effectMonad = Monad[Effect]
 
       override def combineK[T](left: Rule[Effect, T], right: Rule[Effect, T]): Rule[Effect, T] = {
-        Rule[Effect, T] { (t: T) =>
-          effectMonad.flatMap(left(t)) {
-            case Right(value) => right(value)
-            case error@Left(reason) => effectMonad.pure(error)
-          }
+        left.flatMap {
+          case Right(value) => right
+          case error@Left(reason) => Kleisli.pure[Effect, T, ExecutionResult[T]](error)
         }
       }
 
       override def empty[T]: Rule[Effect, T] = {
-        Rule(t => effectMonad.pure(Right(t)))
+        Kleisli[Effect, T, ExecutionResult[T]](t => effectMonad.pure(Right(t)))
       }
     }
 
@@ -53,15 +51,15 @@ object Engine {
     }
 
     def combine[Effect[_] : Monad, T](left: Rule[Effect, T], right: Rule[Effect, T]): Rule[Effect, T] = {
-      val combiner: Monoid[Rule[Effect, T]] = monoid[Effect, T]
+      val combiner = monoidK[Effect]
 
-      combiner.combine(left, right)
+      combiner.combineK(left, right)
     }
 
     def fold[Effect[_] : Monad, T](rules: List[Rule[Effect, T]]): Rule[Effect, T] = {
       import cats.instances.list._
 
-      Traverse[List].fold(rules)(monoid[Effect, T])
+      Traverse[List].foldK[({type L[A] = Rule[Effect, A]})#L, T](rules)(monoidK[Effect])
     }
 
     def transform[Effect1[_], Effect2[_] : Monad, T](left: Rule[Effect1, T], right: Rule[Effect2, T])(implicit effectTransformer: FunctionK[Effect1, Effect2]): Rule[Effect2, T] = {
@@ -71,12 +69,12 @@ object Engine {
     def run[Effect[_], T](rule: Rule[Effect, T], t: T): Effect[ExecutionResult[T]] =
       rule.run(t)
 
-    object Transformer {
-      implicit val idToFuture: FunctionK[Id, Future] = new FunctionK[Id, Future] {
-        override def apply[A](fa: Id[A]): Future[A] = Future.successful(fa)
-      }
-    }
+  }
 
+  object Transformer {
+    implicit val idToFuture: FunctionK[Id, Future] = new FunctionK[Id, Future] {
+      override def apply[A](fa: Id[A]): Future[A] = Future.successful(fa)
+    }
   }
 
   def deviceRule(device: Device): SyncRule[Ad] = {
