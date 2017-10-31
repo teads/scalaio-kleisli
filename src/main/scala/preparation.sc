@@ -6,6 +6,7 @@ import tv.teads._
 
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.util.Try
 
 type ExecutionResult[T] = Either[String, T]
 
@@ -82,7 +83,7 @@ def countryRule(country: Country)(implicit ec: ExecutionContext): AsyncRule[Ad] 
   AsyncRule(ad => Future(Either.cond(ad.country == country, ad, "Country does not match")))
 }
 
-val ad = Ad("FR", "Mobile")
+val ad = Ad("FR", "Mobile-adult")
 
 import cats.syntax.semigroup._
 import Rule.monoid
@@ -99,3 +100,19 @@ import Transformer.idToFuture
 val targeting = Rule.transform(deviceRule("Mobile"), countryRule("FR"))
 
 Await.result(targeting.run(ad), Duration.Inf)
+
+type TryRule[T] = Rule[Try, T]
+
+def contentRule(blacklistTerms: List[String]): TryRule[Ad] = {
+  Kleisli { ad =>
+    Try(
+      Either.cond(
+        !blacklistTerms.exists(term => ad.toString.contains(term)),
+        ad,
+        s"blacklistcontent: $blacklistTerms"
+      )
+    )
+  }
+}
+
+contentRule(List("adult")).run(ad)
