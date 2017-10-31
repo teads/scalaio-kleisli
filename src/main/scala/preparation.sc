@@ -16,14 +16,19 @@ trait SyncRule[T] extends Rule[T] {
 object SyncRule {
   def apply[T](rule: T => ExecutionResult[T]): SyncRule[T] = (t: T) => rule(t)
 
-  def semigroup[T]: Semigroup[SyncRule[T]] = new Semigroup[SyncRule[T]] {
-    override def combine(left: SyncRule[T], right: SyncRule[T]): SyncRule[T] = (t: T) => {
-      left(t).fold(error => Left(error), value => right(value))
+  implicit val monoidK: MonoidK[SyncRule] =
+    new MonoidK[SyncRule] {
+      override def combineK[T](left: SyncRule[T], right: SyncRule[T]): SyncRule[T] = (t: T) => {
+        left(t).fold(error => Left(error), value => right(value))
+      }
+
+      override def empty[A]: SyncRule[A] = {
+        SyncRule(t => Right(t))
+      }
     }
-  }
 
   def combine[T](left: SyncRule[T], right: SyncRule[T]): SyncRule[T] = {
-    semigroup.combine(left, right)
+    monoidK.combineK(left, right)
   }
 }
 
@@ -96,6 +101,14 @@ object Rule {
     transformAll(rules)(t)
   }
 
+  def foldSync[T](rules: List[SyncRule[T]]): SyncRule[T] = {
+    Foldable[List].foldK(rules)
+  }
+
+  def runSync[T](rules: List[SyncRule[T]], t: T): ExecutionResult[T] = {
+    foldSync(rules)(t)
+  }
+
 }
 
 def deviceRule(device: Device): SyncRule[Ad] = {
@@ -116,3 +129,6 @@ val targeting = List(
 val ad = Ad("FR", "Mobile")
 
 Await.result(Rule.run(targeting, ad), Duration.Inf)
+
+
+Rule.runSync(List(deviceRule("Mobile")), ad)
