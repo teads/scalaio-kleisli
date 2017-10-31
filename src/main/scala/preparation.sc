@@ -27,6 +27,8 @@ object SyncRule {
       }
     }
 
+  implicit def monoid[T] = monoidK.algebra[T]
+
   def combine[T](left: SyncRule[T], right: SyncRule[T]): SyncRule[T] = {
     monoidK.combineK(left, right)
   }
@@ -130,5 +132,12 @@ val ad = Ad("FR", "Mobile")
 
 Await.result(Rule.run(targeting, ad), Duration.Inf)
 
+import cats.syntax.semigroupk._
+import cats.syntax.semigroup._
+
+deviceRule("Mobile") combineK deviceRule("Mobile")
+deviceRule("Mobile") <+> deviceRule("Mobile")
+
+deviceRule("Mobile") |+| deviceRule("Mobile")
 
 Rule.runSync(List(deviceRule("Mobile")), ad)
