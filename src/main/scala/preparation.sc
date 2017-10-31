@@ -1,4 +1,6 @@
 import cats._
+import cats.arrow.FunctionK
+import cats.data.Kleisli
 import cats.instances.list._
 import tv.teads._
 
@@ -7,110 +9,69 @@ import scala.concurrent.{Await, ExecutionContext, Future}
 
 type ExecutionResult[T] = Either[String, T]
 
-sealed trait Rule[T]
+type Rule[Effect[_], T] = Kleisli[Effect, T, ExecutionResult[T]]
+type SyncRule[T] = Rule[Id, T]
+type AsyncRule[T] = Rule[Future, T]
 
-trait SyncRule[T] extends Rule[T] {
-  def apply(t: T): ExecutionResult[T]
+object Rule {
+
+  def apply[Effect[_], T](rule: T ⇒ Effect[ExecutionResult[T]]): Rule[Effect, T] =
+    Kleisli[Effect, T, ExecutionResult[T]](rule)
+
+  implicit def monoidK[Effect[_] : Monad]: MonoidK[({type L[A] = Rule[Effect, A]})#L] =
+    new MonoidK[({type L[A] = Rule[Effect, A]})#L] {
+
+      val effectMonad = Monad[Effect]
+
+      override def combineK[T](left: Rule[Effect, T], right: Rule[Effect, T]): Rule[Effect, T] = {
+        left.flatMapF[ExecutionResult[T]] {
+          case Right(value) => right.run(value)
+          case error@Left(reason) => effectMonad.pure(error)
+        }(effectMonad)
+      }
+
+      override def empty[T]: Rule[Effect, T] = {
+        Kleisli[Effect, T, ExecutionResult[T]](t => effectMonad.pure(Right(t)))
+      }
+    }
+
+  implicit def monoid[Effect[_] : Monad, T]: Monoid[Rule[Effect, T]] = {
+    Rule.monoidK[Effect].algebra[T]
+  }
+
+  def combine[Effect[_] : Monad, T](left: Rule[Effect, T], right: Rule[Effect, T]): Rule[Effect, T] = {
+    val combiner = monoidK[Effect]
+
+    combiner.combineK(left, right)
+  }
+
+  def fold[Effect[_] : Monad, T](rules: List[Rule[Effect, T]]): Rule[Effect, T] = {
+    Traverse[List].foldK[({type L[A] = Rule[Effect, A]})#L, T](rules)(monoidK[Effect])
+  }
+
+  def transform[Effect1[_], Effect2[_] : Monad, T](left: Rule[Effect1, T], right: Rule[Effect2, T])(implicit effectTransformer: FunctionK[Effect1, Effect2]): Rule[Effect2, T] = {
+    combine(left.transform(effectTransformer), right)
+  }
+
+  def run[Effect[_], T](rule: Rule[Effect, T], t: T): Effect[ExecutionResult[T]] =
+    rule.run(t)
+
 }
 
 object SyncRule {
-  def apply[T](rule: T => ExecutionResult[T]): SyncRule[T] = (t: T) => rule(t)
-
-  implicit val monoidK: MonoidK[SyncRule] =
-    new MonoidK[SyncRule] {
-      override def combineK[T](left: SyncRule[T], right: SyncRule[T]): SyncRule[T] = (t: T) => {
-        left(t).fold(error => Left(error), value => right(value))
-      }
-
-      override def empty[A]: SyncRule[A] = {
-        SyncRule(t => Right(t))
-      }
-    }
-
-  implicit def monoid[T] = monoidK.algebra[T]
-
-  def combine[T](left: SyncRule[T], right: SyncRule[T]): SyncRule[T] = {
-    monoidK.combineK(left, right)
-  }
-}
-
-trait AsyncRule[T] extends Rule[T] {
-  def apply(t: T)(implicit ec: ExecutionContext): Future[ExecutionResult[T]]
+  def apply[T](rule: T => ExecutionResult[T]): SyncRule[T] =
+    Rule[Id, T](rule)
 }
 
 object AsyncRule {
-  def apply[T](rule: T => Future[ExecutionResult[T]]): AsyncRule[T] = new AsyncRule[T] {
-    override def apply(t: T)(implicit ec: ExecutionContext): Future[ExecutionResult[T]] = rule(t)
-  }
-
-  def semigroup[T]: Semigroup[AsyncRule[T]] = new Semigroup[AsyncRule[T]] {
-    override def combine(left: AsyncRule[T], right: AsyncRule[T]): AsyncRule[T] = new AsyncRule[T] {
-      override def apply(t: T)(implicit ec: ExecutionContext): Future[ExecutionResult[T]] = left(t).flatMap {
-        case Right(value) => right(value)
-        case Left(error) => Future.successful(Left(error))
-      }
-    }
-  }
-
-  def combine[T](left: AsyncRule[T], right: AsyncRule[T]): AsyncRule[T] = {
-    semigroup.combine(left, right)
-  }
-
-  def transform[T](left: SyncRule[T], right: AsyncRule[T]): AsyncRule[T] = new AsyncRule[T] {
-    override def apply(t: T)(implicit ec: ExecutionContext): Future[ExecutionResult[T]] = left(t).fold(
-      error => Future.successful(Left(error)),
-      value => right(value)
-    )
-  }
+  def apply[T](rule: T => Future[ExecutionResult[T]]): AsyncRule[T] =
+    Rule[Future, T](rule)
 }
 
-object Rule {
-  def transform[T](left: SyncRule[T], right: AsyncRule[T]): AsyncRule[T] = new AsyncRule[T] {
-    override def apply(t: T)(implicit ec: ExecutionContext): Future[ExecutionResult[T]] = left(t).fold(
-      error => Future.successful(Left(error)),
-      value => right(value)
-    )
+object Transformer {
+  implicit val idToFuture: FunctionK[Id, Future] = new FunctionK[Id, Future] {
+    override def apply[A](fa: Id[A]): Future[A] = Future.successful(fa)
   }
-
-  implicit val monoidK: MonoidK[Rule] = new MonoidK[Rule] {
-    override def empty[T]: Rule[T] = SyncRule[T](t => Right(t))
-
-    override def combineK[T](x: Rule[T], y: Rule[T]): Rule[T] = (x, y) match {
-      case (leftRule: SyncRule[T], rightRule: SyncRule[T]) => SyncRule.combine(leftRule, rightRule)
-      case (syncRule: SyncRule[T], asyncRule: AsyncRule[T]) => AsyncRule.transform(syncRule, asyncRule)
-      case (asyncRule: AsyncRule[T], syncRule: SyncRule[T]) => AsyncRule.transform(syncRule, asyncRule)
-      case (leftRule: AsyncRule[T], rightRule: AsyncRule[T]) => AsyncRule.combine(leftRule, rightRule)
-    }
-  }
-
-  def combine[T](left: Rule[T], right: Rule[T]): Rule[T] = {
-    monoidK.combineK(left, right)
-  }
-
-
-  def fold[T](rules: List[Rule[T]]): Rule[T] = {
-    Traverse[List].foldK(rules)
-  }
-
-  def transformAll[T](rules: List[Rule[T]]): AsyncRule[T] = {
-    fold[T](rules) match {
-      case syncRule: SyncRule[T] => AsyncRule(ad => Future.successful(syncRule(ad)))
-      case asyncRule: AsyncRule[T] => asyncRule
-    }
-  }
-
-  def run[T](rules: List[Rule[T]], t: T)(implicit executionContext: ExecutionContext): Future[ExecutionResult[T]] = {
-    transformAll(rules)(t)
-  }
-
-  def foldSync[T](rules: List[SyncRule[T]]): SyncRule[T] = {
-    Foldable[List].foldK(rules)
-  }
-
-  def runSync[T](rules: List[SyncRule[T]], t: T): ExecutionResult[T] = {
-    foldSync(rules)(t)
-  }
-
 }
 
 def deviceRule(device: Device): SyncRule[Ad] = {
@@ -121,23 +82,20 @@ def countryRule(country: Country)(implicit ec: ExecutionContext): AsyncRule[Ad] 
   AsyncRule(ad => Future(Either.cond(ad.country == country, ad, "Country does not match")))
 }
 
-implicit val ec = concurrent.ExecutionContext.global
-
-val targeting = List(
-  deviceRule("Mobile"),
-  countryRule("FR")
-)
-
 val ad = Ad("FR", "Mobile")
 
-Await.result(Rule.run(targeting, ad), Duration.Inf)
-
-import cats.syntax.semigroupk._
 import cats.syntax.semigroup._
+import Rule.monoid
 
-deviceRule("Mobile") combineK deviceRule("Mobile")
-deviceRule("Mobile") <+> deviceRule("Mobile")
+val syncRule = deviceRule("Mobile") |+| deviceRule("Mobile")
 
-deviceRule("Mobile") |+| deviceRule("Mobile")
+syncRule.run(ad)
 
-Rule.runSync(List(deviceRule("Mobile")), ad)
+implicit val ec = concurrent.ExecutionContext.global
+
+import cats.instances.future._
+import Transformer.idToFuture
+
+val targeting = Rule.transform(deviceRule("Mobile"), countryRule("FR"))
+
+Await.result(targeting.run(ad), Duration.Inf)
