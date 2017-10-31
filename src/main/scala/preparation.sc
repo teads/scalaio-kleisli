@@ -1,3 +1,5 @@
+import cats._
+import cats.instances.list._
 import tv.teads._
 
 import scala.concurrent.duration.Duration
@@ -14,8 +16,14 @@ trait SyncRule[T] extends Rule[T] {
 object SyncRule {
   def apply[T](rule: T => ExecutionResult[T]): SyncRule[T] = (t: T) => rule(t)
 
-  def combine[T](left: SyncRule[T], right: SyncRule[T]): SyncRule[T] = (t: T) => {
-    left(t).flatMap(value => right(value))
+  def semigroup[T]: Semigroup[SyncRule[T]] = new Semigroup[SyncRule[T]] {
+    override def combine(left: SyncRule[T], right: SyncRule[T]): SyncRule[T] = (t: T) => {
+      left(t).fold(error => Left(error), value => right(value))
+    }
+  }
+
+  def combine[T](left: SyncRule[T], right: SyncRule[T]): SyncRule[T] = {
+    semigroup.combine(left, right)
   }
 }
 
@@ -28,13 +36,25 @@ object AsyncRule {
     override def apply(t: T)(implicit ec: ExecutionContext): Future[ExecutionResult[T]] = rule(t)
   }
 
-  def combine[T](left: AsyncRule[T], right: AsyncRule[T]): AsyncRule[T] = new AsyncRule[T] {
-    override def apply(t: T)(implicit ec: ExecutionContext): Future[ExecutionResult[T]] = left(t).flatMap {
-      case Right(value) => right(value)
-      case Left(error) => Future.successful(Left(error))
+  def semigroup[T]: Semigroup[AsyncRule[T]] = new Semigroup[AsyncRule[T]] {
+    override def combine(left: AsyncRule[T], right: AsyncRule[T]): AsyncRule[T] = new AsyncRule[T] {
+      override def apply(t: T)(implicit ec: ExecutionContext): Future[ExecutionResult[T]] = left(t).flatMap {
+        case Right(value) => right(value)
+        case Left(error) => Future.successful(Left(error))
+      }
     }
   }
 
+  def combine[T](left: AsyncRule[T], right: AsyncRule[T]): AsyncRule[T] = {
+    semigroup.combine(left, right)
+  }
+
+  def transform[T](left: SyncRule[T], right: AsyncRule[T]): AsyncRule[T] = new AsyncRule[T] {
+    override def apply(t: T)(implicit ec: ExecutionContext): Future[ExecutionResult[T]] = left(t).fold(
+      error => Future.successful(Left(error)),
+      value => right(value)
+    )
+  }
 }
 
 object Rule {
@@ -45,20 +65,24 @@ object Rule {
     )
   }
 
-  def combine[T](left: Rule[T], right: Rule[T]): Rule[T] = {
-    (left, right) match {
+  implicit val monoidK: MonoidK[Rule] = new MonoidK[Rule] {
+    override def empty[T]: Rule[T] = SyncRule[T](t => Right(t))
+
+    override def combineK[T](x: Rule[T], y: Rule[T]): Rule[T] = (x, y) match {
       case (leftRule: SyncRule[T], rightRule: SyncRule[T]) => SyncRule.combine(leftRule, rightRule)
-      case (syncRule: SyncRule[T], asyncRule: AsyncRule[T]) => Rule.transform(syncRule, asyncRule)
-      case (asyncRule: AsyncRule[T], syncRule: SyncRule[T]) => Rule.transform(syncRule, asyncRule)
+      case (syncRule: SyncRule[T], asyncRule: AsyncRule[T]) => AsyncRule.transform(syncRule, asyncRule)
+      case (asyncRule: AsyncRule[T], syncRule: SyncRule[T]) => AsyncRule.transform(syncRule, asyncRule)
       case (leftRule: AsyncRule[T], rightRule: AsyncRule[T]) => AsyncRule.combine(leftRule, rightRule)
     }
   }
 
+  def combine[T](left: Rule[T], right: Rule[T]): Rule[T] = {
+    monoidK.combineK(left, right)
+  }
+
+
   def fold[T](rules: List[Rule[T]]): Rule[T] = {
-    val firstRule: Rule[T] = SyncRule[T](t => Right(t))
-    rules.foldLeft(firstRule) {
-      case (acc, rule) => combine(acc, rule)
-    }
+    Traverse[List].foldK(rules)
   }
 
   def transformAll[T](rules: List[Rule[T]]): AsyncRule[T] = {
@@ -72,16 +96,6 @@ object Rule {
     transformAll(rules)(t)
   }
 
-  def foldSync[T](rules: List[SyncRule[T]]): SyncRule[T] = {
-    val firstRule: SyncRule[T] = SyncRule[T](t => Right(t))
-    rules.foldLeft(firstRule) {
-      case (acc, rule) => SyncRule.combine(acc, rule)
-    }
-  }
-
-  def runSync[T](rules: List[SyncRule[T]], t: T): ExecutionResult[T] = {
-    foldSync(rules)(t)
-  }
 }
 
 def deviceRule(device: Device): SyncRule[Ad] = {
@@ -100,7 +114,5 @@ val targeting = List(
 )
 
 val ad = Ad("FR", "Mobile")
-
-Rule.runSync(List(deviceRule("Mobile")), ad)
 
 Await.result(Rule.run(targeting, ad), Duration.Inf)
